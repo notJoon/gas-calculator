@@ -334,6 +334,269 @@ func TestLoop(n int) int {
 	analyzer.printAnalyses()
 }
 
+func TestAnalyzeRangeStatement(t *testing.T) {
+	const src = `
+package main
+
+func iterate(values []int) int {
+	sum := 0
+	for _, v := range values {
+		sum = sum + v
+	}
+	return sum
+}
+
+func main() {
+	nums := []int{1, 2, 3, 4}
+	iterate(nums)
+}
+`
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "test.go", src, 0)
+	if err != nil {
+		t.Fatalf("Failed to parse test code: %v", err)
+	}
+
+	gasCosts := DefaultGasCost()
+	analyzer := NewAnalyzer(fset, gasCosts)
+
+	analyzer.analyzeFile("main", file)
+
+	if analyzer.analysis["main.iterate"].OperationCosts["IterNext"] != gasCosts.IterNextCostFlat {
+		t.Errorf("analyzeRangeStatement(): IterNext should have cost of %d, got %d",
+			gasCosts.IterNextCostFlat, analyzer.analysis["main.iterate"].OperationCosts["IterNext"])
+	}
+
+	if analyzer.analysis["main.iterate"].OperationCosts[ADD] != gasCosts.AddCost {
+		t.Errorf("analyzeRangeStatement(): Add should have cost of %d, got %d", gasCosts.AddCost, analyzer.analysis["main.iterate"].OperationCosts[ADD])
+	}
+
+	analyzer.printAnalyses()
+}
+
+func TestBasicLit(t *testing.T) {
+	const src = `
+package main
+
+func greet(name string) string {
+	return "Hello, " + name
+}
+
+func main() {
+	s := greet("World")
+	println(s)
+}
+`
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "test.go", src, 0)
+	if err != nil {
+		t.Fatalf("Failed to parse test code: %v", err)
+	}
+
+	gasCosts := DefaultGasCost()
+	analyzer := NewAnalyzer(fset, gasCosts)
+
+	analyzer.analyzeFile("main", file)
+
+	greetAnalysis, ok := analyzer.analysis["main.greet"]
+	if !ok {
+		t.Fatalf("analyzeFile(): main.greet is missing")
+	}
+
+	// string operation cost verification
+	if greetAnalysis.OperationCosts[ADD] != gasCosts.AddCost {
+		t.Errorf("greet function has wrong string operation cost. expected: %d, got: %d",
+			gasCosts.AddCost, greetAnalysis.OperationCosts[ADD])
+	}
+
+	// main function analysis verification
+	mainAnalysis, ok := analyzer.analysis["main.main"]
+	if !ok {
+		t.Fatalf("analyzeFile(): main.main is missing")
+	}
+
+	expectedCalls := []string{"main.greet", "main.println"}
+
+	if mainAnalysis.OperationCosts[FunctionCall] != gasCosts.FunctionCallCost*int64(len(expectedCalls)) {
+		t.Errorf("main function has wrong function call cost. expected: %d, got: %d",
+			gasCosts.FunctionCallCost, mainAnalysis.OperationCosts[FunctionCall])
+	}
+
+	for _, call := range expectedCalls {
+		if !slices.Contains(mainAnalysis.Calls, call) {
+			t.Errorf("main function is missing call to %s", call)
+		}
+	}
+
+	analyzer.printAnalyses()
+}
+
+func TestAnalyzeStatements(t *testing.T) {
+	const src = `
+package main
+
+func greet(name string) string {
+    return "Hello, " + name
+}
+
+func sum(arr []int) int {
+    total := 0
+    for i := 0; i < len(arr); i++ {
+        total = total + arr[i]
+    }
+    return total
+}
+
+func main() {
+    msg := greet("World")
+    println(msg)
+    nums := []int{1, 2, 3, 4}
+    sum(nums)
+}
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "test.go", src, 0)
+	if err != nil {
+		t.Fatalf("Failed to parse test code: %v", err)
+	}
+
+	gasCosts := DefaultGasCost()
+	analyzer := NewAnalyzer(fset, gasCosts)
+	analyzer.analyzeFile("main", file)
+
+	t.Run("greet function analysis", func(t *testing.T) {
+		greetAnalysis, ok := analyzer.analysis["main.greet"]
+		if !ok {
+			t.Fatal("greet function analysis result is missing")
+		}
+
+		// string operation cost verification
+		if greetAnalysis.OperationCosts[ADD] != gasCosts.AddCost {
+			t.Errorf("string operation cost is wrong. expected: %d, got: %d",
+				gasCosts.AddCost, greetAnalysis.OperationCosts[ADD])
+		}
+
+		// string literal value cost verification
+		if _, exists := greetAnalysis.OperationCosts["ValueBytes"]; !exists {
+			t.Error("string literal value cost is not calculated")
+		}
+	})
+
+	t.Run("sum function analysis", func(t *testing.T) {
+		sumAnalysis, ok := analyzer.analysis["main.sum"]
+		if !ok {
+			t.Fatal("sum function analysis result is missing")
+		}
+
+		// array read cost verification
+		if _, exists := sumAnalysis.OperationCosts["Read"]; !exists {
+			t.Error("array read cost is not calculated")
+		}
+
+		// addition operation cost verification
+		if sumAnalysis.OperationCosts[ADD] != gasCosts.AddCost {
+			t.Errorf("addition operation cost is wrong. expected: %d, got: %d",
+				gasCosts.AddCost, sumAnalysis.OperationCosts[ADD])
+		}
+
+		// variable write cost verification (total variable)
+		if _, exists := sumAnalysis.OperationCosts["Write"]; !exists {
+			t.Error("variable write cost is not calculated")
+		}
+	})
+	t.Run("main function analysis", func(t *testing.T) {
+		mainAnalysis, ok := analyzer.analysis["main.main"]
+		if !ok {
+			t.Fatal("main function analysis result is missing")
+		}
+
+		// function call cost verification
+		expectedCalls := []string{"main.greet", "main.println", "main.sum"}
+		for _, call := range expectedCalls {
+			if !slices.Contains(mainAnalysis.Calls, call) {
+				t.Errorf("function call %s is missing", call)
+			}
+		}
+
+		// function call cost verification
+		expectedCallCost := gasCosts.FunctionCallCost * int64(len(expectedCalls))
+		if mainAnalysis.OperationCosts[FunctionCall] != expectedCallCost {
+			t.Errorf("function call cost is wrong. expected: %d, got: %d",
+				expectedCallCost, mainAnalysis.OperationCosts[FunctionCall])
+		}
+
+		// slice initialization cost verification
+		if _, exists := mainAnalysis.OperationCosts["Write"]; !exists {
+			t.Error("slice initialization cost is not calculated")
+		}
+	})
+
+	analyzer.printAnalyses()
+}
+
+func TestAnalyzeIndexExpression(t *testing.T) {
+	const src = `
+package main
+
+func arrayAccess() {
+    arr := make([]int, 5)
+    arr[0] = 10 // write to array
+
+    x := arr[1] // read from array
+
+    arr[2] = arr[3] // read and write to array
+}
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "test.go", src, 0)
+	if err != nil {
+		t.Fatalf("Failed to parse test code: %v", err)
+	}
+
+	gasCosts := DefaultGasCost()
+	analyzer := NewAnalyzer(fset, gasCosts)
+	analyzer.analyzeFile("main", file)
+
+	analysis, ok := analyzer.analysis["main.arrayAccess"]
+	if !ok {
+		t.Fatal("arrayAccess function analysis result is missing")
+	}
+
+	t.Run("array access cost verification", func(t *testing.T) {
+		// write cost verification
+		writeCost, hasWrite := analysis.OperationCosts["Write"]
+		if !hasWrite {
+			t.Error("array write cost is not calculated")
+		}
+
+		readCost, hasRead := analysis.OperationCosts["Read"]
+		if !hasRead {
+			t.Error("array read cost is not calculated")
+		}
+
+		t.Logf("actual write cost: %d", writeCost)
+		t.Logf("actual read cost: %d", readCost)
+
+		minWriteOps := 3
+		minReadOps := 2
+		minWriteCost := gasCosts.WriteCostFlat * int64(minWriteOps)
+		minReadCost := gasCosts.ReadCostFlat * int64(minReadOps)
+
+		if writeCost < minWriteCost {
+			t.Errorf("write cost is less than minimum expected value. expected: %d, got: %d",
+				minWriteCost, writeCost)
+		}
+		if readCost < minReadCost {
+			t.Errorf("read cost is less than minimum expected value. expected: %d, got: %d",
+				minReadCost, readCost)
+		}
+	})
+
+	analyzer.printAnalyses()
+}
+
 func TestFullAnalysis(t *testing.T) {
 	srcCode := `
 package complex

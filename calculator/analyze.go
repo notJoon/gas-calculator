@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/token"
+	"strconv"
 	"strings"
 )
 
@@ -24,6 +25,8 @@ type GasCost struct {
 	ShrCost int64
 
 	// memory access costs
+	HasCost          int64
+	DeleteCost       int64
 	ReadCostFlat     int64
 	ReadCostPerByte  int64
 	WriteCostFlat    int64
@@ -31,27 +34,37 @@ type GasCost struct {
 
 	// function call
 	FunctionCallCost int64
+
+	// for-range iteration
+	IterNextCostFlat int64
+	ValueCostPerByte int64 // literal value (or variable) per byte
 }
 
 func DefaultGasCost() GasCost {
 	return GasCost{
-		AddCost:          1000,
-		SubCost:          1000,
-		MulCost:          2000,
-		DivCost:          2000,
-		ModCost:          2000,
-		AndCost:          500,
-		OrCost:           500,
-		XorCost:          500,
-		NotCost:          500,
-		NegCost:          1000,
-		ShlCost:          1000,
-		ShrCost:          1000,
+		AddCost: 1000,
+		SubCost: 1000,
+		MulCost: 2000,
+		DivCost: 2000,
+		ModCost: 2000,
+
+		AndCost: 500,
+		OrCost:  500,
+		XorCost: 500,
+		NotCost: 500,
+		NegCost: 1000,
+		ShlCost: 1000,
+		ShrCost: 1000,
+
+		FunctionCallCost: 1000,
+		HasCost:          1000,
+		DeleteCost:       1000,
 		ReadCostFlat:     1000,
 		ReadCostPerByte:  3,
-		WriteCostFlat:    1000,
-		WriteCostPerByte: 3,
-		FunctionCallCost: 1000,
+		WriteCostFlat:    2000,
+		WriteCostPerByte: 30,
+		IterNextCostFlat: 30,
+		ValueCostPerByte: 10,
 	}
 }
 
@@ -115,6 +128,8 @@ func (a *Analyzer) analyzeStatement(stmt ast.Stmt, analysis *FunctionAnalysis) {
 		a.analyzeIfStatement(s, analysis)
 	case *ast.ForStmt:
 		a.analyzeForStatement(s, analysis)
+	case *ast.RangeStmt:
+		a.analyzeRangeStatement(s, analysis)
 	case *ast.ReturnStmt:
 		a.analyzeReturnStatement(s, analysis)
 	case *ast.ExprStmt:
@@ -123,8 +138,26 @@ func (a *Analyzer) analyzeStatement(stmt ast.Stmt, analysis *FunctionAnalysis) {
 }
 
 func (a *Analyzer) analyzeAssignment(stmt *ast.AssignStmt, analysis *FunctionAnalysis) {
-	for _, expr := range stmt.Rhs {
-		a.analyzeExpression(expr, analysis)
+	for _, lhs := range stmt.Lhs {
+		a.analyzeLHS(lhs, analysis)
+	}
+	for _, rhs := range stmt.Rhs {
+		a.analyzeExpression(rhs, analysis)
+	}
+}
+
+func (a *Analyzer) analyzeLHS(expr ast.Expr, analysis *FunctionAnalysis) {
+	switch e := expr.(type) {
+	case *ast.Ident:
+		defaultVarSize := 8
+		analysis.OperationCosts["Write"] += a.gasCosts.WriteCostFlat + a.gasCosts.WriteCostPerByte*int64(defaultVarSize)
+	case *ast.IndexExpr:
+		defaultElementSize := 8
+		analysis.OperationCosts["Write"] += a.gasCosts.WriteCostFlat + a.gasCosts.WriteCostPerByte*int64(defaultElementSize)
+		a.analyzeExpression(e.X, analysis)
+		a.analyzeExpression(e.Index, analysis)
+	default:
+		analysis.OperationCosts["Write"] += a.gasCosts.WriteCostFlat + a.gasCosts.WriteCostPerByte*8
 	}
 }
 
@@ -136,6 +169,16 @@ func (a *Analyzer) analyzeExpression(expr ast.Expr, analysis *FunctionAnalysis) 
 		a.analyzeCallExpression(e, analysis)
 	case *ast.UnaryExpr:
 		a.analyzeUnaryExpression(e, analysis)
+	case *ast.BasicLit:
+		a.analyzeBasicLit(e, analysis)
+	case *ast.Ident:
+		defaultVarSize := 8
+		analysis.OperationCosts["Read"] += a.gasCosts.ReadCostFlat + a.gasCosts.ReadCostPerByte*int64(defaultVarSize)
+	case *ast.IndexExpr:
+		defaultElementSize := 8
+		analysis.OperationCosts["Read"] += a.gasCosts.ReadCostFlat + a.gasCosts.ReadCostPerByte*int64(defaultElementSize)
+		a.analyzeExpression(e.X, analysis)
+		a.analyzeExpression(e.Index, analysis)
 	}
 }
 
@@ -202,6 +245,21 @@ func (a *Analyzer) analyzeUnaryExpression(expr *ast.UnaryExpr, analysis *Functio
 	a.analyzeExpression(expr.X, analysis)
 }
 
+func (a *Analyzer) analyzeBasicLit(lit *ast.BasicLit, analysis *FunctionAnalysis) {
+	var byteCount int
+	switch lit.Kind {
+	case token.STRING:
+		s, err := strconv.Unquote(lit.Value)
+		if err != nil {
+			s = lit.Value
+		}
+		byteCount = len(s)
+	default:
+		byteCount = len(lit.Value)
+	}
+	analysis.OperationCosts["ValueBytes"] += a.gasCosts.ValueCostPerByte * int64(byteCount)
+}
+
 func (a *Analyzer) analyzeIfStatement(stmt *ast.IfStmt, analysis *FunctionAnalysis) {
 	if stmt.Cond != nil {
 		a.analyzeExpression(stmt.Cond, analysis)
@@ -225,6 +283,18 @@ func (a *Analyzer) analyzeForStatement(stmt *ast.ForStmt, analysis *FunctionAnal
 	if stmt.Body != nil {
 		a.analyzeFuncionBody(stmt.Body, analysis)
 	}
+}
+
+func (a *Analyzer) analyzeRangeStatement(stmt *ast.RangeStmt, analysis *FunctionAnalysis) {
+	// In static analysis, we don't know the exact number of iterations,
+	// so by default we assume a single application
+	analysis.OperationCosts["IterNext"] += a.gasCosts.IterNextCostFlat
+
+	// slice, map etc.
+	a.analyzeExpression(stmt.X, analysis)
+
+	// analyze body
+	a.analyzeFuncionBody(stmt.Body, analysis)
 }
 
 func (a *Analyzer) analyzeReturnStatement(stmt *ast.ReturnStmt, analysis *FunctionAnalysis) {

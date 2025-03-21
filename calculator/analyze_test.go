@@ -719,3 +719,169 @@ func MathOperations(a, b int) int {
 
 	analyzer.printAnalyses()
 }
+
+func TestAnalyzeImportedPackageFunctions(t *testing.T) {
+	const mainSrc = `
+package main
+
+import (
+	"foo"
+	"bar"
+)
+
+func processData(x int) int {
+	a := foo.Calculate(x)
+	b := bar.Transform(a)
+	return foo.Combine(b, bar.GetValue())
+}
+
+func main() {
+	result := processData(10)
+	println(result)
+}
+`
+
+	const fooSrc = `
+package foo
+
+func Calculate(x int) int {
+	return x * 2 + 1
+}
+
+func Combine(a, b int) int {
+	return a + b
+}
+`
+
+	const barSrc = `
+package bar
+
+func Transform(x int) int {
+	return x * 3
+}
+
+func GetValue() int {
+	return 42
+}
+`
+
+	fset := token.NewFileSet()
+	
+	// Parse all source files
+	mainFile, err := parser.ParseFile(fset, "main.go", mainSrc, 0)
+	if err != nil {
+		t.Fatalf("Failed to parse main code: %v", err)
+	}
+
+	fooFile, err := parser.ParseFile(fset, "foo/foo.go", fooSrc, 0)
+	if err != nil {
+		t.Fatalf("Failed to parse foo code: %v", err)
+	}
+
+	barFile, err := parser.ParseFile(fset, "bar/bar.go", barSrc, 0)
+	if err != nil {
+		t.Fatalf("Failed to parse bar code: %v", err)
+	}
+
+	gasCosts := DefaultGasCost()
+	analyzer := NewAnalyzer(fset, gasCosts)
+
+	// Analyze all files
+	analyzer.analyzeFile("main", mainFile)
+	analyzer.analyzeFile("foo", fooFile)
+	analyzer.analyzeFile("bar", barFile)
+
+	t.Run("foo package analysis", func(t *testing.T) {
+		// Test Calculate function
+		calculateAnalysis, ok := analyzer.analysis["foo.Calculate"]
+		if !ok {
+			t.Fatal("Calculate function analysis is missing")
+		}
+
+		// Verify operations in Calculate
+		if calculateAnalysis.OperationCosts[MUL] != gasCosts.MulCost {
+			t.Errorf("Calculate function should have multiplication cost of %d, got %d",
+				gasCosts.MulCost, calculateAnalysis.OperationCosts[MUL])
+		}
+		if calculateAnalysis.OperationCosts[ADD] != gasCosts.AddCost {
+			t.Errorf("Calculate function should have addition cost of %d, got %d",
+				gasCosts.AddCost, calculateAnalysis.OperationCosts[ADD])
+		}
+
+		// Test Combine function
+		combineAnalysis, ok := analyzer.analysis["foo.Combine"]
+		if !ok {
+			t.Fatal("Combine function analysis is missing")
+		}
+
+		if combineAnalysis.OperationCosts[ADD] != gasCosts.AddCost {
+			t.Errorf("Combine function should have addition cost of %d, got %d",
+				gasCosts.AddCost, combineAnalysis.OperationCosts[ADD])
+		}
+	})
+
+	t.Run("bar package analysis", func(t *testing.T) {
+		// Test Transform function
+		transformAnalysis, ok := analyzer.analysis["bar.Transform"]
+		if !ok {
+			t.Fatal("Transform function analysis is missing")
+		}
+
+		if transformAnalysis.OperationCosts[MUL] != gasCosts.MulCost {
+			t.Errorf("Transform function should have multiplication cost of %d, got %d",
+				gasCosts.MulCost, transformAnalysis.OperationCosts[MUL])
+		}
+
+		// Test GetValue function
+		getValueAnalysis, ok := analyzer.analysis["bar.GetValue"]
+		if !ok {
+			t.Fatal("GetValue function analysis is missing")
+		}
+
+		// GetValue should only have ValueBytes cost for constant return
+		if len(getValueAnalysis.OperationCosts) != 1 {
+			t.Errorf("GetValue function should only have ValueBytes cost, got %v",
+				getValueAnalysis.OperationCosts)
+		}
+		if getValueAnalysis.OperationCosts[ValueBytes] != 20 {
+			t.Errorf("GetValue function should have ValueBytes cost of 20, got %d",
+				getValueAnalysis.OperationCosts[ValueBytes])
+		}
+	})
+
+	t.Run("main package analysis with imported functions", func(t *testing.T) {
+		processDataAnalysis, ok := analyzer.analysis["main.processData"]
+		if !ok {
+			t.Fatal("processData function analysis is missing")
+		}
+
+		// Verify all function calls are recorded
+		expectedCalls := []string{
+			"foo.Calculate",
+			"bar.Transform",
+			"foo.Combine",
+			"bar.GetValue",
+		}
+
+		for _, call := range expectedCalls {
+			if !slices.Contains(processDataAnalysis.Calls, call) {
+				t.Errorf("missing expected call to %s", call)
+			}
+		}
+
+		// Verify total operation costs include imported function operations
+		expectedTotalCost := gasCosts.FunctionCallCost*int64(len(expectedCalls)) +
+			gasCosts.MulCost*2 + // From foo.Calculate and bar.Transform
+			gasCosts.AddCost*2   // From foo.Calculate and foo.Combine
+
+		t.Logf("expected total cost: %d", expectedTotalCost)
+
+		if processDataAnalysis.OperationCosts[FunctionCall] != gasCosts.FunctionCallCost*int64(len(expectedCalls)) {
+			t.Errorf("function call cost is incorrect. expected: %d, got: %d",
+				gasCosts.FunctionCallCost*int64(len(expectedCalls)),
+				processDataAnalysis.OperationCosts[FunctionCall])
+		}
+	})
+
+	analyzer.printAnalyses()
+}

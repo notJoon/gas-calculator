@@ -363,9 +363,9 @@ func main() {
 
 	analyzer.analyzeFile("main", file)
 
-	if analyzer.analysis["main.iterate"].OperationCosts["IterNext"] != gasCosts.IterNextCostFlat {
+	if analyzer.analysis["main.iterate"].OperationCosts[IterNext] != gasCosts.IterNextCostFlat {
 		t.Errorf("analyzeRangeStatement(): IterNext should have cost of %d, got %d",
-			gasCosts.IterNextCostFlat, analyzer.analysis["main.iterate"].OperationCosts["IterNext"])
+			gasCosts.IterNextCostFlat, analyzer.analysis["main.iterate"].OperationCosts[IterNext])
 	}
 
 	if analyzer.analysis["main.iterate"].OperationCosts[ADD] != gasCosts.AddCost {
@@ -479,7 +479,7 @@ func main() {
 		}
 
 		// string literal value cost verification
-		if _, exists := greetAnalysis.OperationCosts["ValueBytes"]; !exists {
+		if _, exists := greetAnalysis.OperationCosts[ValueBytes]; !exists {
 			t.Error("string literal value cost is not calculated")
 		}
 	})
@@ -491,7 +491,7 @@ func main() {
 		}
 
 		// array read cost verification
-		if _, exists := sumAnalysis.OperationCosts["Read"]; !exists {
+		if _, exists := sumAnalysis.OperationCosts[Read]; !exists {
 			t.Error("array read cost is not calculated")
 		}
 
@@ -502,7 +502,7 @@ func main() {
 		}
 
 		// variable write cost verification (total variable)
-		if _, exists := sumAnalysis.OperationCosts["Write"]; !exists {
+		if _, exists := sumAnalysis.OperationCosts[Write]; !exists {
 			t.Error("variable write cost is not calculated")
 		}
 	})
@@ -528,7 +528,7 @@ func main() {
 		}
 
 		// slice initialization cost verification
-		if _, exists := mainAnalysis.OperationCosts["Write"]; !exists {
+		if _, exists := mainAnalysis.OperationCosts[Write]; !exists {
 			t.Error("slice initialization cost is not calculated")
 		}
 	})
@@ -566,12 +566,12 @@ func arrayAccess() {
 
 	t.Run("array access cost verification", func(t *testing.T) {
 		// write cost verification
-		writeCost, hasWrite := analysis.OperationCosts["Write"]
+		writeCost, hasWrite := analysis.OperationCosts[Write]
 		if !hasWrite {
 			t.Error("array write cost is not calculated")
 		}
 
-		readCost, hasRead := analysis.OperationCosts["Read"]
+		readCost, hasRead := analysis.OperationCosts[Read]
 		if !hasRead {
 			t.Error("array read cost is not calculated")
 		}

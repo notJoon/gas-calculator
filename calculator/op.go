@@ -14,5 +14,9 @@ const (
 	SHL = "Shl"
 	SHR = "Shr"
 
+	Read         = "Read"
+	Write        = "Write"
+	ValueBytes   = "ValueBytes"
+	IterNext     = "IterNext"
 	FunctionCall = "FunctionCall"
 )

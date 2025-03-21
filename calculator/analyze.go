@@ -150,14 +150,14 @@ func (a *Analyzer) analyzeLHS(expr ast.Expr, analysis *FunctionAnalysis) {
 	switch e := expr.(type) {
 	case *ast.Ident:
 		defaultVarSize := 8
-		analysis.OperationCosts["Write"] += a.gasCosts.WriteCostFlat + a.gasCosts.WriteCostPerByte*int64(defaultVarSize)
+		analysis.OperationCosts[Write] += a.gasCosts.WriteCostFlat + a.gasCosts.WriteCostPerByte*int64(defaultVarSize)
 	case *ast.IndexExpr:
 		defaultElementSize := 8
-		analysis.OperationCosts["Write"] += a.gasCosts.WriteCostFlat + a.gasCosts.WriteCostPerByte*int64(defaultElementSize)
+		analysis.OperationCosts[Write] += a.gasCosts.WriteCostFlat + a.gasCosts.WriteCostPerByte*int64(defaultElementSize)
 		a.analyzeExpression(e.X, analysis)
 		a.analyzeExpression(e.Index, analysis)
 	default:
-		analysis.OperationCosts["Write"] += a.gasCosts.WriteCostFlat + a.gasCosts.WriteCostPerByte*8
+		analysis.OperationCosts[Write] += a.gasCosts.WriteCostFlat + a.gasCosts.WriteCostPerByte*8
 	}
 }
 
@@ -173,10 +173,10 @@ func (a *Analyzer) analyzeExpression(expr ast.Expr, analysis *FunctionAnalysis) 
 		a.analyzeBasicLit(e, analysis)
 	case *ast.Ident:
 		defaultVarSize := 8
-		analysis.OperationCosts["Read"] += a.gasCosts.ReadCostFlat + a.gasCosts.ReadCostPerByte*int64(defaultVarSize)
+		analysis.OperationCosts[Read] += a.gasCosts.ReadCostFlat + a.gasCosts.ReadCostPerByte*int64(defaultVarSize)
 	case *ast.IndexExpr:
 		defaultElementSize := 8
-		analysis.OperationCosts["Read"] += a.gasCosts.ReadCostFlat + a.gasCosts.ReadCostPerByte*int64(defaultElementSize)
+		analysis.OperationCosts[Read] += a.gasCosts.ReadCostFlat + a.gasCosts.ReadCostPerByte*int64(defaultElementSize)
 		a.analyzeExpression(e.X, analysis)
 		a.analyzeExpression(e.Index, analysis)
 	}
@@ -257,7 +257,7 @@ func (a *Analyzer) analyzeBasicLit(lit *ast.BasicLit, analysis *FunctionAnalysis
 	default:
 		byteCount = len(lit.Value)
 	}
-	analysis.OperationCosts["ValueBytes"] += a.gasCosts.ValueCostPerByte * int64(byteCount)
+	analysis.OperationCosts[ValueBytes] += a.gasCosts.ValueCostPerByte * int64(byteCount)
 }
 
 func (a *Analyzer) analyzeIfStatement(stmt *ast.IfStmt, analysis *FunctionAnalysis) {
@@ -288,7 +288,7 @@ func (a *Analyzer) analyzeForStatement(stmt *ast.ForStmt, analysis *FunctionAnal
 func (a *Analyzer) analyzeRangeStatement(stmt *ast.RangeStmt, analysis *FunctionAnalysis) {
 	// In static analysis, we don't know the exact number of iterations,
 	// so by default we assume a single application
-	analysis.OperationCosts["IterNext"] += a.gasCosts.IterNextCostFlat
+	analysis.OperationCosts[IterNext] += a.gasCosts.IterNextCostFlat
 
 	// slice, map etc.
 	a.analyzeExpression(stmt.X, analysis)
